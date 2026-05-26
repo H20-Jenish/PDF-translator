@@ -1,0 +1,100 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-pdfuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-pdfpass}
+      POSTGRES_DB: ${DB_NAME:-pdftranslator}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-pdfuser} -d ${DB_NAME:-pdftranslator}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - app_network
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - app_network
+    # Uncomment below for NVIDIA GPU support
+    deploy:
+       resources:
+         reservations:
+           devices:
+             - driver: nvidia
+               count: 1
+               capabilities: [gpu]
+
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-pdfuser}:${DB_PASSWORD:-pdfpass}@db:5432/${DB_NAME:-pdftranslator}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - AI_SERVER_URL=${AI_SERVER_URL:-http://ollama:11434}
+      - AI_MODEL=${AI_MODEL:-translategemma:12b}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+    networks:
+      - app_network
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  celery_worker:
+    build: ./backend
+    command: celery -A app.tasks worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-pdfuser}:${DB_PASSWORD:-pdfpass}@db:5432/${DB_NAME:-pdftranslator}
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - AI_SERVER_URL=${AI_SERVER_URL:-http://ollama:11434}
+      - AI_MODEL=${AI_MODEL:-llama2}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+    volumes:
+      - uploads:/app/uploads
+      - outputs:/app/outputs
+    networks:
+      - app_network
+    depends_on:
+      - db
+      - redis
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - app_network
+    depends_on:
+      - backend
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads:
+  outputs:
+  ollama_data:
